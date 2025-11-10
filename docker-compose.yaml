@@ -1,0 +1,77 @@
+name: production-planner
+
+networks:
+    app-net:
+        driver: bridge
+
+volumes:
+    pgdata:
+
+services:
+    postgres:
+        image: postgres:16
+        container_name: pp-postgres
+        restart: unless-stopped
+        environment:
+            POSTGRES_USER: ${PGUSER:-products}
+            POSTGRES_PASSWORD: ${PGPASSWORD:-products}
+            POSTGRES_DB: ${PGDATABASE:-products}
+        ports:
+            - "5432:5432"
+        networks:
+            - app-net
+        volumes:
+            - pgdata:/var/lib/postgresql/data
+
+    products-api:
+        build:
+            context: ./apps/svc.products/
+            dockerfile: Dockerfile
+        image: pp/products-api:dev
+        container_name: pp-products-api
+        depends_on:
+            postgres:
+                condition: service_started
+        environment:
+            # .NET picks up double-underscore as section separator
+            ConnectionStrings__ProductsDb: "Host=postgres;Port=5432;Database=${PGDATABASE:-products};Username=${PGUSER:-products};Password=${PGPASSWORD:-products}"
+            ASPNETCORE_URLS: "http://0.0.0.0:8080"
+            ASPNETCORE_ENVIRONMENT: "Development"
+            # Uncomment when you enable auth
+            # Jwt__Authority: "https://keycloak.example.com/realms/production"
+            # Jwt__Audience: "products.api"
+        ports:
+            - "5000:8080" # optional: direct access for debugging
+        networks:
+            - app-net
+
+    gateway:
+        build:
+            context: ./apps/gateway
+            dockerfile: Dockerfile
+        image: pp/gateway:dev
+        container_name: pp-gateway
+        depends_on:
+            products-api:
+                condition: service_started
+        environment:
+            ASPNETCORE_URLS: "http://0.0.0.0:8080"
+            ASPNETCORE_ENVIRONMENT: "Development"
+        ports:
+            - "8080:8080"
+        networks:
+            - app-net
+
+    web:
+        build:
+            context: ./apps/web
+            dockerfile: Dockerfile
+        image: pp/web:dev
+        container_name: pp-web
+        environment:
+            NODE_ENV: "development"
+            NEXT_PUBLIC_GATEWAY_URL: "http://gateway:8080"
+        ports:
+            - "3000:3000"
+        networks:
+            - app-net
