@@ -3,7 +3,6 @@
     public sealed class Product
     {
         public Guid Id { get; set; } = Guid.NewGuid();
-        public string Sku { get; set; } = default!;
         public string Name { get; set; } = default!;
         public string? Description { get; set; }
         public decimal Price { get; set; }

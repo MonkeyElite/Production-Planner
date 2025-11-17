@@ -7,7 +7,6 @@ namespace svc.products.Validation
     {
         public ProductCreateValidator()
         {
-            RuleFor(x => x.Sku).NotEmpty().MaximumLength(64);
             RuleFor(x => x.Name).NotEmpty().MaximumLength(200);
             RuleFor(x => x.Price).GreaterThanOrEqualTo(0);
         }
