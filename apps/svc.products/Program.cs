@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 using FluentValidation;
 using svc.products.Data;
 using svc.products.Validation;
@@ -67,38 +66,53 @@ internal class Program
         {
             var services = scope.ServiceProvider;
             var logger = services.GetRequiredService<ILogger<Program>>();
+            var db = services.GetRequiredService<ProductsDb>();
 
-            try
+            const int maxAttempts = 10;
+            var delay = TimeSpan.FromSeconds(3);
+
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                var db = services.GetRequiredService<ProductsDb>();
-                // Optional: simple retry if DB not up yet (dev convenience)
-                const int maxAttempts = 10;
-                var delay = TimeSpan.FromSeconds(3);
-
-                for (var attempt = 1; attempt <= maxAttempts; attempt++)
+                try
                 {
-                    try
-                    {
-                        db.Database.MigrateAsync();
-                        logger.LogInformation("Database migrated successfully.");
-                        break;
-                    }
-                    catch (Npgsql.NpgsqlException ex) when (attempt < maxAttempts)
-                    {
-                        logger.LogWarning(ex, "DB not ready yet. Attempt {Attempt}/{MaxAttempts}. Retrying in {Delay}s...", attempt, maxAttempts, delay.TotalSeconds);
-                        Task.Delay(delay);
-                    }
-                }
+                    var pending = db.Database.GetPendingMigrations().ToList();
+                    logger.LogInformation(
+                        "Attempt {Attempt}: pending migrations {Count} - {Names}",
+                        attempt,
+                        pending.Count,
+                        string.Join(", ", pending)
+                    );
 
-                // Optional seed (dev only)
-                // if (!await db.Products.AnyAsync()) { db.Products.Add(new Product { ... }); await db.SaveChangesAsync(); }
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error applying migrations");
-                throw; // Let container crash rather than run with a broken DB
+                    db.Database.Migrate(); // <-- sync, actually blocks until done
+
+                    logger.LogInformation("Database migrated successfully.");
+                    break; // success, leave loop
+                }
+                catch (Npgsql.NpgsqlException ex) when (attempt < maxAttempts)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "Database not ready yet. Attempt {Attempt}/{MaxAttempts}. Retrying in {Delay}s...",
+                        attempt,
+                        maxAttempts,
+                        delay.TotalSeconds
+                    );
+                    Thread.Sleep(delay);
+                }
+                catch (System.Net.Sockets.SocketException ex) when (attempt < maxAttempts)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "Socket error while connecting to DB. Attempt {Attempt}/{MaxAttempts}. Retrying in {Delay}s...",
+                        attempt,
+                        maxAttempts,
+                        delay.TotalSeconds
+                    );
+                    Thread.Sleep(delay);
+                }
             }
         }
+
 
         app.Run();
     }

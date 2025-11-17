@@ -12,7 +12,7 @@ using svc.products.Data;
 namespace svc.products.Migrations
 {
     [DbContext(typeof(ProductsDb))]
-    [Migration("20251110113731_InitialCreate")]
+    [Migration("20251117102437_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -49,11 +49,6 @@ namespace svc.products.Migrations
                         .HasPrecision(12, 2)
                         .HasColumnType("numeric(12,2)");
 
-                    b.Property<string>("Sku")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -65,7 +60,7 @@ namespace svc.products.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Sku")
+                    b.HasIndex("Name")
                         .IsUnique();
 
                     b.ToTable("Products");

@@ -12,8 +12,7 @@ namespace svc.products.Data
             b.Entity<Product>(e =>
             {
                 e.HasKey(x => x.Id);
-                e.HasIndex(x => x.Sku).IsUnique();
-                e.Property(x => x.Sku).HasMaxLength(64).IsRequired();
+                e.HasIndex(x => x.Name).IsUnique();
                 e.Property(x => x.Name).HasMaxLength(200).IsRequired();
                 e.Property(x => x.Price).HasPrecision(12, 2);
                 e.Property(p => p.Version)

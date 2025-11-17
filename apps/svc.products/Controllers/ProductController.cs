@@ -1,5 +1,4 @@
 ﻿using FluentValidation;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Net.Http.Headers;
@@ -40,12 +39,10 @@ namespace svc.products.Controllers
 
             var products = await _db.Products
                 .AsNoTracking()
-                .OrderBy(p => p.Sku)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .Select(p => new ProductView(
                     p.Id,
-                    p.Sku,
                     p.Name,
                     p.Description,
                     p.Price,
@@ -69,7 +66,6 @@ namespace svc.products.Controllers
 
             return Ok(new ProductView(
                 product.Id,
-                product.Sku,
                 product.Name,
                 product.Description,
                 product.Price,
@@ -87,7 +83,6 @@ namespace svc.products.Controllers
 
             var entity = new Product
             {
-                Sku = dto.Sku,
                 Name = dto.Name,
                 Description = dto.Description,
                 Price = dto.Price,
