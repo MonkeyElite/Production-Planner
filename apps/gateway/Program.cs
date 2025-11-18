@@ -1,6 +1,10 @@
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
 using Serilog;
+using System.Linq;
+using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -11,7 +15,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
   {
       o.Authority = builder.Configuration["Jwt:Authority"];
       o.Audience = builder.Configuration["Jwt:Audience"];
-      o.RequireHttpsMetadata = true;
+
+      o.RequireHttpsMetadata = false;
   });
 
 builder.Services.AddAuthorizationBuilder()
@@ -48,8 +53,11 @@ builder.Services.AddReverseProxy().LoadFromConfig(builder.Configuration.GetSecti
 
 var app = builder.Build();
 
-app.UseHsts();
-app.UseHttpsRedirection();
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+    app.UseHttpsRedirection();
+}
 
 app.Use(async (ctx, next) =>
 {
@@ -59,10 +67,33 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
+app.UseCors();
+
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.UseWhen(ctx => RequiresStepUp(ctx), branch =>
+{
+    branch.Use(async (ctx, next) =>
+    {
+        if (ctx.User?.Identity?.IsAuthenticated != true)
+        {
+            await ctx.ChallengeAsync();
+            return;
+        }
+
+        if (!HasStepUpClaims(ctx.User))
+        {
+            ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await ctx.Response.WriteAsync("Step-up MFA required for this route.");
+            return;
+        }
+
+        await next();
+    });
+});
+
 app.UseRateLimiter();
-app.UseCors();
 
 app.UseForwardedHeaders();
 
@@ -71,3 +102,37 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 app.MapReverseProxy();
 
 app.Run();
+
+static bool RequiresStepUp(HttpContext context)
+{
+    if (!(HttpMethods.IsPost(context.Request.Method)
+        || HttpMethods.IsPut(context.Request.Method)
+        || HttpMethods.IsDelete(context.Request.Method)))
+    {
+        return false;
+    }
+
+    return context.Request.Path.StartsWithSegments("/api/products", out _);
+}
+
+static bool HasStepUpClaims(ClaimsPrincipal user)
+{
+    if (user is null)
+    {
+        return false;
+    }
+
+    var amrMatches = user.FindAll("amr")
+        .Select(c => c.Value)
+        .Any(v => string.Equals(v, "mfa", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(v, "otp", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(v, "hwk", StringComparison.OrdinalIgnoreCase));
+
+    if (amrMatches)
+    {
+        return true;
+    }
+
+    var acr = user.FindFirst("acr")?.Value;
+    return acr is not null && string.Equals(acr, "urn:mfa", StringComparison.OrdinalIgnoreCase);
+}

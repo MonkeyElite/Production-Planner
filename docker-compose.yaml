@@ -8,6 +8,20 @@ volumes:
     pgdata:
 
 services:
+    keycloak:
+        image: quay.io/keycloak/keycloak:24.0
+        container_name: pp-keycloak
+        command: start-dev --http-port 8082 --import-realm --hostname-strict=false
+        environment:
+            KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+            KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+        volumes:
+            - ./keycloak:/opt/keycloak/data/import
+        ports:
+            - "8082:8082"
+        networks:
+            - app-net
+
     postgres:
         image: postgres:16
         container_name: pp-postgres
@@ -29,21 +43,20 @@ services:
             dockerfile: Dockerfile
         image: pp/products-api:dev
         container_name: pp-products-api
-        depends_on:
-            postgres:
-                condition: service_started
         environment:
             # .NET picks up double-underscore as section separator
             ConnectionStrings__ProductsDb: "Host=postgres;Port=5432;Database=${PGDATABASE:-products};Username=${PGUSER:-products};Password=${PGPASSWORD:-products}"
             ASPNETCORE_URLS: "http://0.0.0.0:8080"
             ASPNETCORE_ENVIRONMENT: "Development"
-            # Uncomment when you enable auth
-            # Jwt__Authority: "https://keycloak.example.com/realms/production"
-            # Jwt__Audience: "products.api"
+            Jwt__Authority: "http://keycloak:8082/realms/production"
+            Jwt__Audience: "gateway"
         ports:
             - "5000:8080" # optional: direct access for debugging
         networks:
             - app-net
+        depends_on:
+            keycloak:
+                condition: service_started
 
     gateway:
         build:
@@ -51,16 +64,18 @@ services:
             dockerfile: Dockerfile
         image: pp/gateway:dev
         container_name: pp-gateway
-        depends_on:
-            products-api:
-                condition: service_started
         environment:
             ASPNETCORE_URLS: "http://0.0.0.0:8080"
             ASPNETCORE_ENVIRONMENT: "Development"
+            Jwt__Authority: "http://keycloak:8082/realms/production"
+            Jwt__Audience: "gateway"
         ports:
             - "8080:8080"
         networks:
             - app-net
+        depends_on:
+            keycloak:
+                condition: service_started
 
     web:
         build:
@@ -70,8 +85,17 @@ services:
         container_name: pp-web
         environment:
             NODE_ENV: "development"
-            NEXT_PUBLIC_GATEWAY_URL: "http://gateway:8080"
+            NEXT_PUBLIC_GATEWAY_URL: "http://localhost:8080"
+            NEXTAUTH_URL: "http://localhost:3000"
+            NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-super-secret-example}
+            KEYCLOAK_ISSUER: "http://keycloak:8082/realms/production"
+            KEYCLOAK_CLIENT_ID: "gateway"
+            KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-gateway-secret}
+            KEYCLOAK_SCOPE: "openid"
         ports:
             - "3000:3000"
         networks:
             - app-net
+        depends_on:
+            keycloak:
+                condition: service_started

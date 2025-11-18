@@ -3,6 +3,8 @@ using Microsoft.EntityFrameworkCore;
 using FluentValidation;
 using svc.products.Data;
 using svc.products.Validation;
+using System.Security.Claims;
+using System.Linq;
 
 internal class Program
 {
@@ -20,13 +22,53 @@ internal class Program
             {
                 o.Authority = builder.Configuration["Jwt:Authority"];
                 o.Audience = builder.Configuration["Jwt:Audience"];
-                o.RequireHttpsMetadata = true;
+                o.RequireHttpsMetadata = false;
+                o.Events = new JwtBearerEvents
+                {
+                    OnAuthenticationFailed = ctx =>
+                    {
+                        var logger = ctx.HttpContext.RequestServices
+                            .GetRequiredService<ILogger<Program>>();
+                        logger.LogError(ctx.Exception,
+                            "JWT auth failed. Authority={Authority}, Audience={Audience}",
+                            o.Authority, o.Audience);
+                        return Task.CompletedTask;
+                    },
+                    OnTokenValidated = ctx =>
+                    {
+                        var logger = ctx.HttpContext.RequestServices
+                            .GetRequiredService<ILogger<Program>>();
+                        var scopes = string.Join(" ", ctx.Principal?
+                            .FindAll("scope")
+                            .Select(c => c.Value));
+                        logger.LogInformation("JWT validated. Sub={Sub}, Scope={Scope}",
+                            ctx.Principal?.FindFirst("sub")?.Value, scopes);
+                        return Task.CompletedTask;
+                    }
+                };
+
             });
 
         builder.Services.AddAuthorization(o =>
         {
-            o.AddPolicy("products:read", p => p.RequireClaim("scope", "products.read"));
-            o.AddPolicy("products:write", p => p.RequireClaim("scope", "products.write"));
+            o.AddPolicy("products:read", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(ctx => HasScope(ctx.User, "products.read"));
+            });
+
+            o.AddPolicy("products:write", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(ctx =>
+                    HasScope(ctx.User, "products.write") && HasPlannerRole(ctx.User));
+            });
+
+            o.AddPolicy("mfa", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(ctx => HasStrongAuthentication(ctx.User));
+            });
         });
 
         // CORS
@@ -50,7 +92,11 @@ internal class Program
 
         var app = builder.Build();
 
-        app.UseHttpsRedirection();
+        if (!app.Environment.IsDevelopment())
+        {
+            app.UseHttpsRedirection();
+        }
+
         app.UseAuthentication();
         app.UseAuthorization();
 
@@ -115,5 +161,30 @@ internal class Program
 
 
         app.Run();
+    }
+
+    private static bool HasScope(ClaimsPrincipal user, string requiredScope)
+    {
+        return user.FindAll("scope")
+            .SelectMany(c => c.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            .Any(scope => string.Equals(scope, requiredScope, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool HasPlannerRole(ClaimsPrincipal user)
+    {
+        var plannerRole = "planner";
+        return user.FindAll(ClaimTypes.Role).Concat(user.FindAll("role"))
+            .Any(c => string.Equals(c.Value, plannerRole, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool HasStrongAuthentication(ClaimsPrincipal user)
+    {
+        var amrValues = user.FindAll("amr").Select(c => c.Value);
+        var acr = user.FindFirst("acr")?.Value;
+
+        var accepted = new[] { "mfa", "otp", "hwk" };
+
+        return amrValues.Any(v => accepted.Any(a => string.Equals(a, v, StringComparison.OrdinalIgnoreCase)))
+            || (acr is not null && string.Equals(acr, "urn:mfa", StringComparison.OrdinalIgnoreCase));
     }
 }

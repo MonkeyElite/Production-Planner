@@ -1,4 +1,5 @@
 ﻿using FluentValidation;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Net.Http.Headers;
@@ -11,7 +12,6 @@ namespace svc.products.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
-    //[Authorize(Policy = "products:read")] // default read policy; specific ones per method
     public class ProductsController : ControllerBase
     {
         private readonly ProductsDb _db;
@@ -30,6 +30,7 @@ namespace svc.products.Controllers
 
         // GET: api/products
         [HttpGet]
+        [Authorize(Policy = "products:read")]
         public async Task<ActionResult<IEnumerable<ProductView>>> GetProducts(
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 50)
@@ -54,6 +55,7 @@ namespace svc.products.Controllers
 
         // GET: api/products/{id}
         [HttpGet("{id:guid}")]
+        [Authorize(Policy = "products:read")]
         public async Task<ActionResult<ProductView>> GetProduct(Guid id)
         {
             var product = await _db.Products.FindAsync(id);
@@ -74,7 +76,8 @@ namespace svc.products.Controllers
 
         // POST: api/products
         [HttpPost]
-        //[Authorize(Policy = "products:write")]
+        [Authorize(Policy = "products:write")]
+        [Authorize(Policy = "mfa")]
         public async Task<ActionResult> CreateProduct([FromBody] ProductCreateDto dto)
         {
             var validation = await _createValidator.ValidateAsync(dto);
@@ -97,7 +100,8 @@ namespace svc.products.Controllers
 
         // PUT: api/products/{id}
         [HttpPut("{id:guid}")]
-        //[Authorize(Policy = "products:write")]
+        [Authorize(Policy = "products:write")]
+        [Authorize(Policy = "mfa")]
         public async Task<IActionResult> UpdateProduct(Guid id, [FromBody] ProductUpdateDto dto)
         {
             var validation = await _updateValidator.ValidateAsync(dto);
@@ -143,7 +147,8 @@ namespace svc.products.Controllers
 
         // DELETE: api/products/{id}
         [HttpDelete("{id:guid}")]
-        //[Authorize(Policy = "products:write")]
+        [Authorize(Policy = "products:write")]
+        [Authorize(Policy = "mfa")]
         public async Task<IActionResult> DeleteProduct(Guid id)
         {
             var entity = await _db.Products.FindAsync(id);

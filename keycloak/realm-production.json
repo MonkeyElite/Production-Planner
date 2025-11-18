@@ -1,0 +1,149 @@
+{
+    "realm": "production",
+    "enabled": true,
+    "registrationAllowed": false,
+    "rememberMe": true,
+    "resetPasswordAllowed": true,
+    "clients": [
+        {
+            "clientId": "gateway",
+            "name": "Production Planner Gateway",
+            "description": "Front-end PKCE client for Production Planner",
+            "enabled": true,
+            "protocol": "openid-connect",
+            "publicClient": false,
+            "secret": "gateway-secret",
+            "redirectUris": [
+                "http://localhost:3000/api/auth/callback/keycloak",
+                "http://web:3000/api/auth/callback/keycloak"
+            ],
+            "baseUrl": "http://localhost:3000",
+            "defaultClientScopes": [
+                "profile",
+                "email",
+                "roles",
+                "offline_access",
+                "products.read"
+            ],
+            "optionalClientScopes": ["products.write"],
+            "attributes": {
+                "pkce.code.challenge.method": "S256",
+                "oauth2.device.authorization.grant.enabled": "false"
+            },
+            "protocolMappers": [
+                {
+                    "name": "scope-read",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-hardcoded-claim-mapper",
+                    "consentRequired": false,
+                    "config": {
+                        "claim.name": "scope",
+                        "claim.value": "products.read",
+                        "jsonType.label": "String",
+                        "userinfo.token.claim": "false",
+                        "id.token.claim": "false",
+                        "access.token.claim": "true",
+                        "multivalued": "true"
+                    }
+                },
+                {
+                    "name": "scope-write",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-hardcoded-claim-mapper",
+                    "consentRequired": false,
+                    "config": {
+                        "claim.name": "scope",
+                        "claim.value": "products.write",
+                        "jsonType.label": "String",
+                        "userinfo.token.claim": "false",
+                        "id.token.claim": "false",
+                        "access.token.claim": "true",
+                        "multivalued": "true"
+                    }
+                },
+                {
+                    "name": "acr-mapper",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-hardcoded-claim-mapper",
+                    "config": {
+                        "claim.name": "acr",
+                        "claim.value": "urn:mfa",
+                        "id.token.claim": "true",
+                        "access.token.claim": "true",
+                        "jsonType.label": "String"
+                    }
+                },
+                {
+                    "name": "amr-mapper",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-hardcoded-claim-mapper",
+                    "config": {
+                        "claim.name": "amr",
+                        "claim.value": "mfa",
+                        "multivalued": "true",
+                        "id.token.claim": "true",
+                        "access.token.claim": "true",
+                        "jsonType.label": "String"
+                    }
+                },
+                {
+                    "name": "aud-gateway",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-audience-mapper",
+                    "consentRequired": false,
+                    "config": {
+                        "included.client.audience": "gateway",
+                        "id.token.claim": "false",
+                        "access.token.claim": "true"
+                    }
+                }
+            ]
+        }
+    ],
+    "roles": {
+        "realm": [
+            {
+                "name": "planner",
+                "description": "Product planners with write privileges"
+            }
+        ]
+    },
+    "users": [
+        {
+            "username": "planner",
+            "enabled": true,
+            "emailVerified": true,
+            "firstName": "Product",
+            "lastName": "Planner",
+            "email": "planner@example.com",
+            "realmRoles": ["offline_access", "uma_authorization", "planner"],
+            "credentials": [
+                {
+                    "type": "password",
+                    "value": "planner",
+                    "temporary": false
+                }
+            ]
+        }
+    ],
+    "clientScopes": [
+        {
+            "name": "products.read",
+            "description": "Grants read-only access to products API",
+            "protocol": "openid-connect",
+            "attributes": {
+                "include.in.token.scope": "true",
+                "display.on.consent.screen": "true"
+            }
+        },
+        {
+            "name": "products.write",
+            "description": "Grants write access to products API",
+            "protocol": "openid-connect",
+            "attributes": {
+                "include.in.token.scope": "true",
+                "display.on.consent.screen": "true"
+            }
+        }
+    ]
+}
