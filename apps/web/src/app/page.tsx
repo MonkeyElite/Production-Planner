@@ -56,9 +56,10 @@ export default function Home() {
 
             if (!response.ok) {
                 const detail = await response.text();
-                const message = response.status === 403
-                    ? "Gateway blocked the request. Complete MFA in Keycloak to continue."
-                    : `Request failed (${response.status}). ${detail}`;
+                const message =
+                    response.status === 403
+                        ? "Gateway blocked the request. Complete MFA in Keycloak to continue."
+                        : `Request failed (${response.status}). ${detail}`;
                 throw new Error(message);
             }
 
@@ -67,17 +68,20 @@ export default function Home() {
                 throw new Error("Unexpected response payload.");
             }
 
-            const normalized: Product[] = (payload as ProductResponse[]).map((item) => ({
-                id: item.id ?? item.Id ?? crypto.randomUUID(),
-                name: item.name ?? item.Name ?? "Unnamed product",
-                description: item.description ?? item.Description ?? "",
-                price: Number(item.price ?? item.Price ?? 0),
-                isActive: item.isActive ?? item.IsActive ?? true,
-            }));
+            const normalized: Product[] = (payload as ProductResponse[]).map(
+                (item) => ({
+                    id: item.id ?? item.Id ?? crypto.randomUUID(),
+                    name: item.name ?? item.Name ?? "Unnamed product",
+                    description: item.description ?? item.Description ?? "",
+                    price: Number(item.price ?? item.Price ?? 0),
+                    isActive: item.isActive ?? item.IsActive ?? true,
+                })
+            );
 
             setProducts(normalized);
         } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : "Failed to load products.";
+            const message =
+                err instanceof Error ? err.message : "Failed to load products.";
             setProducts([]);
             setError(message);
         } finally {
@@ -117,10 +121,13 @@ export default function Home() {
                             {sessionLoading && "Checking your session..."}
                             {isAuthenticated && !sessionLoading && (
                                 <span>
-                                    Signed in{displayName && ` as ${displayName}`}.
+                                    Signed in
+                                    {displayName && ` as ${displayName}`}.
                                 </span>
                             )}
-                            {!isAuthenticated && !sessionLoading && "Sign in to view inventory."}
+                            {!isAuthenticated &&
+                                !sessionLoading &&
+                                "Sign in to view inventory."}
                         </p>
                     </div>
                     <div className="flex gap-2">
@@ -168,9 +175,12 @@ export default function Home() {
                             <li key={product.id} className="py-3">
                                 <div className="flex items-center justify-between">
                                     <div>
-                                        <div className="font-semibold">{product.name}</div>
+                                        <div className="font-semibold">
+                                            {product.name}
+                                        </div>
                                         <div className="text-sm text-gray-500">
-                                            {product.description || "No description"}
+                                            {product.description ||
+                                                "No description"}
                                         </div>
                                     </div>
                                     <div className="text-sm font-mono">
@@ -178,7 +188,9 @@ export default function Home() {
                                     </div>
                                 </div>
                                 {!product.isActive && (
-                                    <div className="text-xs uppercase text-orange-600">Inactive</div>
+                                    <div className="text-xs uppercase text-orange-600">
+                                        Inactive
+                                    </div>
                                 )}
                             </li>
                         ))}

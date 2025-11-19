@@ -7,6 +7,22 @@ networks:
 volumes:
     pgdata:
 
+secrets:
+    gateway-cert:
+        file: ./secrets/certs/gateway.pfx
+    gateway-client-cert:
+        file: ./secrets/certs/gateway-client.pfx
+    products-api-cert:
+        file: ./secrets/certs/products.pfx
+    ca-cert:
+        file: ./secrets/certs/ca.crt
+    products-db-connection:
+        file: ./secrets/config/ConnectionStrings__ProductsDb
+    jwt-authority:
+        file: ./secrets/config/Jwt__Authority
+    jwt-audience:
+        file: ./secrets/config/Jwt__Audience
+
 services:
     keycloak:
         image: quay.io/keycloak/keycloak:24.0
@@ -23,19 +39,26 @@ services:
             - app-net
 
     postgres:
-        image: postgres:16
+        build:
+            context: ./postgres-ssl
+        image: pp/postgres-ssl:16
         container_name: pp-postgres
         restart: unless-stopped
         environment:
             POSTGRES_USER: ${PGUSER:-products}
-            POSTGRES_PASSWORD: ${PGPASSWORD:-products}
             POSTGRES_DB: ${PGDATABASE:-products}
+            POSTGRES_PASSWORD: ${PGPASSWORD:-products}
         ports:
             - "5432:5432"
         networks:
             - app-net
         volumes:
             - pgdata:/var/lib/postgresql/data
+            # Mount certs and pg_hba.conf read-only into a "secrets" dir
+            - ./secrets/certs/postgres.crt:/run/postgres-secrets/server.crt:ro
+            - ./secrets/certs/postgres.key:/run/postgres-secrets/server.key:ro
+            - ./secrets/certs/ca.crt:/run/postgres-secrets/root.crt:ro
+            - ./secrets/postgres/pg_hba.conf:/run/postgres-secrets/pg_hba.conf:ro
 
     products-api:
         build:
@@ -44,19 +67,29 @@ services:
         image: pp/products-api:dev
         container_name: pp-products-api
         environment:
-            # .NET picks up double-underscore as section separator
-            ConnectionStrings__ProductsDb: "Host=postgres;Port=5432;Database=${PGDATABASE:-products};Username=${PGUSER:-products};Password=${PGPASSWORD:-products}"
-            ASPNETCORE_URLS: "http://0.0.0.0:8080"
             ASPNETCORE_ENVIRONMENT: "Development"
-            Jwt__Authority: "http://keycloak:8082/realms/production"
-            Jwt__Audience: "gateway"
+            ASPNETCORE_URLS: "https://0.0.0.0:8443;http://0.0.0.0:8080"
+            ASPNETCORE_Kestrel__Endpoints__Https__Url: "https://0.0.0.0:8443"
         ports:
-            - "5000:8080" # optional: direct access for debugging
+            - "5000:8443" # optional: direct access for debugging
         networks:
             - app-net
         depends_on:
             keycloak:
                 condition: service_started
+        secrets:
+            - source: products-db-connection
+              target: ConnectionStrings__ProductsDb
+            - source: gateway-client-cert
+              target: gateway-to-products.pfx
+            - source: products-api-cert
+              target: products-api-cert.pfx
+            - source: ca-cert
+              target: products-ca.crt
+            - source: jwt-authority
+              target: Jwt__Authority
+            - source: jwt-audience
+              target: Jwt__Audience
 
     gateway:
         build:
@@ -65,17 +98,28 @@ services:
         image: pp/gateway:dev
         container_name: pp-gateway
         environment:
-            ASPNETCORE_URLS: "http://0.0.0.0:8080"
             ASPNETCORE_ENVIRONMENT: "Development"
-            Jwt__Authority: "http://keycloak:8082/realms/production"
-            Jwt__Audience: "gateway"
+            ASPNETCORE_URLS: "https://0.0.0.0:8443;http://0.0.0.0:8080"
+            ASPNETCORE_Kestrel__Endpoints__Https__Url: "https://0.0.0.0:8443"
         ports:
             - "8080:8080"
+            - "8443:8443"
         networks:
             - app-net
         depends_on:
             keycloak:
                 condition: service_started
+        secrets:
+            - source: gateway-cert
+              target: gateway-cert.pfx
+            - source: gateway-client-cert
+              target: gateway-to-products.pfx
+            - source: ca-cert
+              target: products-ca.crt
+            - source: jwt-authority
+              target: Jwt__Authority
+            - source: jwt-audience
+              target: Jwt__Audience
 
     web:
         build:

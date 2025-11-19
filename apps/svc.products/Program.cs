@@ -1,10 +1,13 @@
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.EntityFrameworkCore;
+﻿using System.Security.Authentication;
+using System.Security.Claims;
+using System.Security.Cryptography.X509Certificates;
 using FluentValidation;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using svc.products.Data;
 using svc.products.Validation;
-using System.Security.Claims;
-using System.Linq;
 
 internal class Program
 {
@@ -12,43 +15,67 @@ internal class Program
     {
         var builder = WebApplication.CreateBuilder(args);
 
+        // Load secrets (Jwt__Authority, Jwt__Audience, connection string, etc.)
+        builder.Configuration.AddKeyPerFile("/run/secrets", optional: true);
+
+        // Bind strongly-typed settings
+        var jwtSettings = builder.Configuration.GetSection("Jwt").Get<JwtSettings>() ?? new JwtSettings();
+        var mutualTlsOptions = builder.Configuration.GetSection("MutualTls").Get<MutualTlsOptions>();
+
         // Database
         builder.Services.AddDbContext<ProductsDb>(opt =>
             opt.UseNpgsql(builder.Configuration.GetConnectionString("ProductsDb")));
 
-        // AuthN/Z
-        builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-            .AddJwtBearer(o =>
+        // AuthN
+        builder.Services
+            .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+            .AddJwtBearer(options =>
             {
-                o.Authority = builder.Configuration["Jwt:Authority"];
-                o.Audience = builder.Configuration["Jwt:Audience"];
-                o.RequireHttpsMetadata = false;
-                o.Events = new JwtBearerEvents
+                options.Authority = jwtSettings.Authority;
+                options.Audience = jwtSettings.Audience;
+
+                options.RequireHttpsMetadata = false;
+
+                options.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuer = false,
+                    ValidateAudience = false,
+                    ValidateLifetime = true,
+                    ClockSkew = TimeSpan.FromMinutes(2)
+                };
+
+                // Correct way to get logger factory
+                var provider = builder.Services.BuildServiceProvider();
+                var logger = provider.GetRequiredService<ILogger<Program>>();
+
+                options.Events = new JwtBearerEvents
                 {
                     OnAuthenticationFailed = ctx =>
                     {
-                        var logger = ctx.HttpContext.RequestServices
-                            .GetRequiredService<ILogger<Program>>();
                         logger.LogError(ctx.Exception,
                             "JWT auth failed. Authority={Authority}, Audience={Audience}",
-                            o.Authority, o.Audience);
+                            options.Authority, options.Audience);
+
                         return Task.CompletedTask;
                     },
                     OnTokenValidated = ctx =>
                     {
-                        var logger = ctx.HttpContext.RequestServices
-                            .GetRequiredService<ILogger<Program>>();
-                        var scopes = string.Join(" ", ctx.Principal?
-                            .FindAll("scope")
-                            .Select(c => c.Value));
-                        logger.LogInformation("JWT validated. Sub={Sub}, Scope={Scope}",
-                            ctx.Principal?.FindFirst("sub")?.Value, scopes);
+                        var scopes = string.Join(" ",
+                            ctx.Principal?
+                                .FindAll("scope")
+                                .Select(c => c.Value));
+
+                        logger.LogInformation(
+                            "JWT validated. Sub={Sub}, Scope={Scope}",
+                            ctx.Principal?.FindFirst("sub")?.Value,
+                            scopes);
+
                         return Task.CompletedTask;
                     }
                 };
-
             });
 
+        // AuthZ
         builder.Services.AddAuthorization(o =>
         {
             o.AddPolicy("products:read", policy =>
@@ -76,13 +103,13 @@ internal class Program
         {
             o.AddDefaultPolicy(policy =>
             {
-                policy.WithOrigins(builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>())
+                policy.WithOrigins(builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()!)
                       .AllowAnyHeader()
                       .AllowAnyMethod();
             });
         });
 
-        // Validation
+        // Controllers + validation
         builder.Services.AddControllers().AddNewtonsoftJson();
         builder.Services.AddValidatorsFromAssemblyContaining<ProductCreateValidator>();
 
@@ -90,12 +117,56 @@ internal class Program
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
 
+        // Kestrel + Mutual TLS for inbound HTTPS (gateway → products-api)
+        builder.WebHost.ConfigureKestrel(options =>
+        {
+            X509Certificate2? clientCa = null;
+
+            if (!string.IsNullOrWhiteSpace(mutualTlsOptions?.ClientCaPath) &&
+                File.Exists(mutualTlsOptions.ClientCaPath))
+            {
+                clientCa = new X509Certificate2(mutualTlsOptions.ClientCaPath);
+            }
+
+            options.ConfigureHttpsDefaults(httpsOptions =>
+            {
+                httpsOptions.SslProtocols = SslProtocols.Tls13;
+                httpsOptions.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+
+                if (clientCa is not null)
+                {
+                    httpsOptions.ClientCertificateValidation = (certificate, chain, errors) =>
+                    {
+                        if (certificate is null)
+                        {
+                            return false;
+                        }
+
+                        chain ??= new X509Chain();
+                        chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+                        chain.ChainPolicy.CustomTrustStore.Clear();
+                        chain.ChainPolicy.CustomTrustStore.Add(clientCa);
+                        chain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
+                        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+
+                        var subjectMatches = string.IsNullOrWhiteSpace(mutualTlsOptions?.ClientCertificateSubject)
+                            || string.Equals(certificate.Subject, mutualTlsOptions.ClientCertificateSubject,
+                                StringComparison.OrdinalIgnoreCase);
+
+                        return subjectMatches && chain.Build(certificate);
+                    };
+                }
+            });
+        });
+
         var app = builder.Build();
 
         if (!app.Environment.IsDevelopment())
         {
             app.UseHttpsRedirection();
         }
+
+        app.UseCors();
 
         app.UseAuthentication();
         app.UseAuthorization();
@@ -108,6 +179,7 @@ internal class Program
 
         app.MapControllers();
 
+        // DB migrations with retry
         using (var scope = app.Services.CreateScope())
         {
             var services = scope.ServiceProvider;
@@ -129,10 +201,9 @@ internal class Program
                         string.Join(", ", pending)
                     );
 
-                    db.Database.Migrate(); // <-- sync, actually blocks until done
-
+                    db.Database.Migrate();
                     logger.LogInformation("Database migrated successfully.");
-                    break; // success, leave loop
+                    break;
                 }
                 catch (Npgsql.NpgsqlException ex) when (attempt < maxAttempts)
                 {
@@ -159,7 +230,6 @@ internal class Program
             }
         }
 
-
         app.Run();
     }
 
@@ -172,7 +242,7 @@ internal class Program
 
     private static bool HasPlannerRole(ClaimsPrincipal user)
     {
-        var plannerRole = "planner";
+        const string plannerRole = "planner";
         return user.FindAll(ClaimTypes.Role).Concat(user.FindAll("role"))
             .Any(c => string.Equals(c.Value, plannerRole, StringComparison.OrdinalIgnoreCase));
     }
@@ -185,6 +255,18 @@ internal class Program
         var accepted = new[] { "mfa", "otp", "hwk" };
 
         return amrValues.Any(v => accepted.Any(a => string.Equals(a, v, StringComparison.OrdinalIgnoreCase)))
-            || (acr is not null && string.Equals(acr, "urn:mfa", StringComparison.OrdinalIgnoreCase));
+               || (acr is not null && string.Equals(acr, "urn:mfa", StringComparison.OrdinalIgnoreCase));
     }
+}
+
+public class JwtSettings
+{
+    public string Authority { get; set; } = string.Empty;
+    public string Audience { get; set; } = string.Empty;
+}
+
+public class MutualTlsOptions
+{
+    public string? ClientCertificateSubject { get; set; }
+    public string? ClientCaPath { get; set; }
 }
