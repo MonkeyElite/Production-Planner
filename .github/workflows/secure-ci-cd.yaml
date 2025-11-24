@@ -116,8 +116,10 @@ jobs:
 
             - name: Build Docker image
               run: |
-                  IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+                  IMAGE_NAME_LOWER="${IMAGE_NAME,,}"   # force lowercase
+                  IMAGE="${REGISTRY}/${IMAGE_NAME_LOWER}:${IMAGE_TAG}"
                   echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+            
                   docker build -t "$IMAGE" -f apps/web/Dockerfile apps/web
 
             # Image-level vulnerability scan
