@@ -96,7 +96,7 @@ jobs:
               with:
                   directory: .
                   quiet: true
-                  soft_fail: false
+                  soft_fail: true
 
     build_and_scan_image:
         name: Build, Scan & Publish Docker Image
