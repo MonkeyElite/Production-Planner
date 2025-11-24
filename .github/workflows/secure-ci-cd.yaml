@@ -25,12 +25,13 @@ jobs:
             - name: Checkout source
               uses: actions/checkout@v4
 
-            # ---- build/test (scoped to web app) ----
+            # ---- build/test ----
             - name: Setup Node.js
               uses: actions/setup-node@v4
               with:
                   node-version: "20"
                   cache: "npm"
+                  cache-dependency-path: apps/web/package-lock.json
 
             - name: Install dependencies
               working-directory: apps/web
