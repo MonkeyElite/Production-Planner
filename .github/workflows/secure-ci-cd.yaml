@@ -1,0 +1,150 @@
+name: Secure CI/CD Demo
+
+on:
+    push:
+        branches: ["main"]
+    pull_request:
+
+permissions:
+    contents: read
+    packages: write
+    id-token: write
+    security-events: write
+
+env:
+    REGISTRY: ghcr.io
+    IMAGE_NAME: ${{ github.repository }}
+    IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+    security_checks:
+        name: Static & Dependency Security Checks
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout source
+              uses: actions/checkout@v4
+
+            # ---- build/test (scoped to web app) ----
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "20"
+                  cache: "npm"
+
+            - name: Install dependencies
+              working-directory: apps/web
+              run: npm ci
+
+            - name: Run unit tests
+              working-directory: apps/web
+              run: npm test --if-present
+
+            # ---- Secret scanning with Gitleaks ----
+            - name: Secret scan
+              uses: zricethezav/gitleaks-action@v2
+              with:
+                  config-path: ""
+                  fail: "true"
+
+            # ---- SAST with Semgrep ----
+            - name: Static analysis
+              uses: returntocorp/semgrep-action@v1
+              with:
+                  config: "p/ci"
+              env:
+                  SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN || '' }}
+
+            # ---- Dependency scanning ----
+            - name: Dependency scan
+              run: |
+                  mkdir -p dependency-check
+                  docker run --rm \
+                    -v "$(pwd)":/src \
+                    -v "$(pwd)/dependency-check":/report \
+                    owasp/dependency-check:latest \
+                    --scan /src \
+                    --format "HTML" \
+                    --out /report
+
+            - name: Upload dependency-check report
+              uses: actions/upload-artifact@v4
+              with:
+                  name: dependency-check-report
+                  path: dependency-check
+
+            # ---- Filesystem vulnerability scan ----
+            - name: Filesystem scan
+              uses: aquasecurity/trivy-action@master
+              with:
+                  scan-type: "fs"
+                  scan-ref: "."
+                  ignore-unfixed: true
+                  vuln-type: "os,library"
+                  format: "table"
+                  exit-code: "1"
+
+            # ---- IaC scanning ----
+            - name: IaC security scan with Checkov
+              uses: bridgecrewio/checkov-action@v12
+              with:
+                  directory: .
+                  quiet: true
+                  soft_fail: false
+
+    build_and_scan_image:
+        name: Build, Scan & Publish Docker Image
+        runs-on: ubuntu-latest
+        needs: security_checks
+
+        steps:
+            - name: Checkout source
+              uses: actions/checkout@v4
+
+            - name: Log in to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Build Docker image
+              run: |
+                  IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+                  echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+                  docker build -t "$IMAGE" -f apps/web/Dockerfile apps/web
+
+            # Image-level vulnerability scan
+            - name: Trivy image scan
+              uses: aquasecurity/trivy-action@master
+              with:
+                  scan-type: "image"
+                  image-ref: ${{ env.IMAGE }}
+                  ignore-unfixed: true
+                  vuln-type: "os,library"
+                  format: "table"
+                  exit-code: "1"
+
+            - name: Push Docker image to GHCR
+              run: |
+                  docker push "$IMAGE"
+
+    sign_image:
+        name: Sign Image
+        runs-on: ubuntu-latest
+        needs: build_and_scan_image
+
+        steps:
+            - name: Install Cosign
+              uses: sigstore/cosign-installer@v3.5.0
+              with:
+                  cosign-release: "v2.4.0"
+
+            - name: Sign image with Cosign keyless
+              env:
+                  COSIGN_EXPERIMENTAL: "1"
+              run: |
+                  IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+                  echo "Signing $IMAGE"
+                  # Keyless signing uses GitHub OIDC identity
+                  cosign sign "$IMAGE"
