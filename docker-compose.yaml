@@ -91,7 +91,7 @@ services:
             KEYCLOAK_ISSUER: "http://keycloak:8082/realms/production"
             KEYCLOAK_CLIENT_ID: "gateway"
             KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-gateway-secret}
-            KEYCLOAK_SCOPE: "openid"
+            KEYCLOAK_SCOPE: "openid products.read products.write offline_access"
         ports:
             - "3000:3000"
         networks:

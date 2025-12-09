@@ -23,9 +23,9 @@
                 "email",
                 "roles",
                 "offline_access",
-                "products.read"
+                "products.read",
+                "products.write"
             ],
-            "optionalClientScopes": ["products.write"],
             "attributes": {
                 "pkce.code.challenge.method": "S256",
                 "oauth2.device.authorization.grant.enabled": "false"
@@ -110,6 +110,7 @@
     },
     "users": [
         {
+            "id": "2b6a180e-5c5f-41cb-b807-54cf72d23b38",
             "username": "planner",
             "enabled": true,
             "emailVerified": true,

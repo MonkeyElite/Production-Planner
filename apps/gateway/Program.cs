@@ -112,7 +112,8 @@ static bool RequiresStepUp(HttpContext context)
         return false;
     }
 
-    return context.Request.Path.StartsWithSegments("/api/products", out _);
+    return context.Request.Path.StartsWithSegments("/api/products", out _)
+        || context.Request.Path.StartsWithSegments("/api/productionlines", out _);
 }
 
 static bool HasStepUpClaims(ClaimsPrincipal user)

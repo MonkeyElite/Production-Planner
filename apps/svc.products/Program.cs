@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using FluentValidation;
+using svc.products.Authorization;
 using svc.products.Data;
 using svc.products.Validation;
 using System.Security.Claims;
@@ -85,6 +87,7 @@ internal class Program
         // Validation
         builder.Services.AddControllers().AddNewtonsoftJson();
         builder.Services.AddValidatorsFromAssemblyContaining<ProductCreateValidator>();
+        builder.Services.AddSingleton<IAuthorizationHandler, SameOwnerAuthorizationHandler>();
 
         // Swagger (dev only)
         builder.Services.AddEndpointsApiExplorer();
