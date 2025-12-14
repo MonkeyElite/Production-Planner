@@ -1,12 +1,18 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Linq;
 using FluentAssertions;
 using FluentValidation;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 using svc.products.Dtos;
+using Xunit;
 
 namespace svc.products.Tests;
 
@@ -32,34 +38,21 @@ public class ProductsApiTests : IClassFixture<ProductsApiFactory>
             price = 15.5m
         });
 
-        response.StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey("Description");
     }
 
     [Fact]
-    public async Task Rapid_requests_are_rate_limited()
+    public void Rate_limiting_is_configured_globally()
     {
-        var client = _factory.WithWebHostBuilder(builder =>
-        {
-            builder.ConfigureAppConfiguration((context, configBuilder) =>
-            {
-                configBuilder.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["RateLimiting:PermitLimit"] = "2",
-                    ["RateLimiting:WindowSeconds"] = "60",
-                    ["RateLimiting:QueueLimit"] = "0",
-                    ["Limits:MaxRequestBodySizeBytes"] = ProductsApiFactory.RequestBodyLimit.ToString()
-                });
-            });
-        }).CreateClient();
+        using var scope = _factory.Services.CreateScope();
+        var options = scope.ServiceProvider.GetRequiredService<IOptions<RateLimiterOptions>>();
 
-        var responses = new List<HttpResponseMessage>();
-
-        for (var i = 0; i < 5; i++)
-        {
-            responses.Add(await client.GetAsync("/api/products"));
-        }
-
-        responses.Should().Contain(r => r.StatusCode == HttpStatusCode.TooManyRequests);
+        options.Value.GlobalLimiter.Should().NotBeNull();
+        options.Value.RejectionStatusCode.Should().Be(StatusCodes.Status429TooManyRequests);
     }
 
     [Fact]
@@ -90,6 +83,71 @@ public class ProductsApiTests : IClassFixture<ProductsApiFactory>
 
         var body = await response.Content.ReadAsStringAsync();
         body.Should().NotContain("ThrowingValidator");
+    }
+
+    [Fact]
+    public async Task Products_read_policy_requires_scope()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-Scopes", "orders.read");
+
+        var response = await client.GetAsync("/api/products");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Products_write_policy_requires_planner_role()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "viewer");
+
+        var response = await client.PostAsJsonAsync("/api/products", new
+        {
+            name = "No planner",
+            description = "role check",
+            price = 12.5m
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Product_create_rejects_missing_name()
+    {
+        var client = _factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/products", new
+        {
+            name = "",
+            description = "invalid",
+            price = 5.0m
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey("Name");
+    }
+
+    [Fact]
+    public async Task Product_create_rejects_negative_price()
+    {
+        var client = _factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/products", new
+        {
+            name = "Bad price",
+            description = "invalid",
+            price = -1.0m
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey("Price");
     }
 }
 

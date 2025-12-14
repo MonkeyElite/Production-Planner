@@ -26,6 +26,11 @@ jobs:
               uses: actions/checkout@v4
 
             # ---- build/test ----
+            - name: Setup .NET
+              uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: "8.0.x"
+
             - name: Setup Node.js
               uses: actions/setup-node@v4
               with:
@@ -37,9 +42,29 @@ jobs:
               working-directory: apps/web
               run: npm ci
 
+            - name: Run frontend lint
+              working-directory: apps/web
+              run: npm run lint --if-present
+
+            - name: Audit frontend dependencies
+              working-directory: apps/web
+              run: npm audit --audit-level=high --production=false
+
             - name: Run unit tests
               working-directory: apps/web
               run: npm test --if-present
+
+            - name: Restore .NET dependencies
+              run: dotnet restore apps/svc.products.Tests/svc.products.Tests.csproj
+
+            - name: Run backend security tests
+              run: dotnet test apps/svc.products.Tests/svc.products.Tests.csproj --configuration Release
+
+            - name: Check vulnerable .NET packages
+              run: dotnet list apps/svc.products/svc.products.csproj package --vulnerable --include-transitive
+
+            - name: Run .NET code analysis
+              run: dotnet format --verify-no-changes apps/svc.products/svc.products.csproj
 
             # ---- Secret scanning with Gitleaks ----
             - name: Secret scan

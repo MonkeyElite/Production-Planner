@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Linq;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
@@ -65,12 +66,30 @@ public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
+        if (Request.Headers.TryGetValue("X-Test-Anonymous", out var anonymous) &&
+            anonymous.Any(v => string.Equals(v, "true", StringComparison.OrdinalIgnoreCase)))
+        {
+            return Task.FromResult(AuthenticateResult.NoResult());
+        }
+
+        var subject = Request.Headers.TryGetValue("X-Test-Subject", out var subjectHeader)
+            ? subjectHeader.FirstOrDefault()
+            : null;
+
+        var scopes = Request.Headers.TryGetValue("X-Test-Scopes", out var scopesHeader)
+            ? scopesHeader.FirstOrDefault()
+            : "products.read products.write";
+
+        var roles = Request.Headers.TryGetValue("X-Test-Roles", out var rolesHeader)
+            ? rolesHeader.FirstOrDefault()
+            : "planner";
+
         var claims = new[]
         {
-            new Claim("sub", UserId.ToString()),
-            new Claim(ClaimTypes.NameIdentifier, UserId.ToString()),
-            new Claim("scope", "products.read products.write"),
-            new Claim("roles", "planner")
+            new Claim("sub", subject ?? UserId.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, subject ?? UserId.ToString()),
+            new Claim("scope", scopes ?? string.Empty),
+            new Claim("roles", roles ?? string.Empty)
         };
 
         var identity = new ClaimsIdentity(claims, Scheme.Name, ClaimTypes.NameIdentifier, "roles");

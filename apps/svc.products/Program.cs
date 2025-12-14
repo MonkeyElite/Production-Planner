@@ -234,48 +234,55 @@ public partial class Program
             var logger = services.GetRequiredService<ILogger<Program>>();
             var db = services.GetRequiredService<ProductsDb>();
 
-            const int maxAttempts = 10;
-            var delay = TimeSpan.FromSeconds(3);
-
-            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            if (db.Database.IsRelational())
             {
-                try
-                {
-                    var pending = db.Database.GetPendingMigrations().ToList();
-                    logger.LogInformation(
-                        "Attempt {Attempt}: pending migrations {Count} - {Names}",
-                        attempt,
-                        pending.Count,
-                        string.Join(", ", pending)
-                    );
+                const int maxAttempts = 10;
+                var delay = TimeSpan.FromSeconds(3);
 
-                    db.Database.Migrate(); // <-- sync, actually blocks until done
+                for (var attempt = 1; attempt <= maxAttempts; attempt++)
+                {
+                    try
+                    {
+                        var pending = db.Database.GetPendingMigrations().ToList();
+                        logger.LogInformation(
+                            "Attempt {Attempt}: pending migrations {Count} - {Names}",
+                            attempt,
+                            pending.Count,
+                            string.Join(", ", pending)
+                        );
 
-                    logger.LogInformation("Database migrated successfully.");
-                    break; // success, leave loop
+                        db.Database.Migrate(); // <-- sync, actually blocks until done
+
+                        logger.LogInformation("Database migrated successfully.");
+                        break; // success, leave loop
+                    }
+                    catch (Npgsql.NpgsqlException ex) when (attempt < maxAttempts)
+                    {
+                        logger.LogWarning(
+                            ex,
+                            "Database not ready yet. Attempt {Attempt}/{MaxAttempts}. Retrying in {Delay}s...",
+                            attempt,
+                            maxAttempts,
+                            delay.TotalSeconds
+                        );
+                        Thread.Sleep(delay);
+                    }
+                    catch (System.Net.Sockets.SocketException ex) when (attempt < maxAttempts)
+                    {
+                        logger.LogWarning(
+                            ex,
+                            "Socket error while connecting to DB. Attempt {Attempt}/{MaxAttempts}. Retrying in {Delay}s...",
+                            attempt,
+                            maxAttempts,
+                            delay.TotalSeconds
+                        );
+                        Thread.Sleep(delay);
+                    }
                 }
-                catch (Npgsql.NpgsqlException ex) when (attempt < maxAttempts)
-                {
-                    logger.LogWarning(
-                        ex,
-                        "Database not ready yet. Attempt {Attempt}/{MaxAttempts}. Retrying in {Delay}s...",
-                        attempt,
-                        maxAttempts,
-                        delay.TotalSeconds
-                    );
-                    Thread.Sleep(delay);
-                }
-                catch (System.Net.Sockets.SocketException ex) when (attempt < maxAttempts)
-                {
-                    logger.LogWarning(
-                        ex,
-                        "Socket error while connecting to DB. Attempt {Attempt}/{MaxAttempts}. Retrying in {Delay}s...",
-                        attempt,
-                        maxAttempts,
-                        delay.TotalSeconds
-                    );
-                    Thread.Sleep(delay);
-                }
+            }
+            else
+            {
+                logger.LogInformation("Skipping migrations for non-relational database provider.");
             }
         }
 
