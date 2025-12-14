@@ -1,10 +1,13 @@
-﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 using FluentValidation;
 using svc.products.Authorization;
 using svc.products.Data;
+using svc.products.Middleware;
 using svc.products.Validation;
 using Microsoft.Extensions.Configuration;
 using System;
@@ -12,13 +15,15 @@ using System.Security.Claims;
 using System.Linq;
 using Microsoft.IdentityModel.Tokens;
 
-internal class Program
+public partial class Program
 {
+    public const long MaxRequestBodySizeBytes = 1 * 1024 * 1024; // 1 MB
+
     private static void Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
 
-        ConfigureKestrelForTls(builder);
+        ConfigureKestrel(builder, MaxRequestBodySizeBytes);
 
         // Database
         builder.Services.AddDbContext<ProductsDb>(opt =>
@@ -112,7 +117,10 @@ internal class Program
         });
 
         // Validation
-        builder.Services.AddControllers().AddNewtonsoftJson();
+        builder.Services.AddControllers(options =>
+        {
+            options.Filters.Add(new RequestSizeLimitAttribute(MaxRequestBodySizeBytes));
+        }).AddNewtonsoftJson();
         builder.Services.AddValidatorsFromAssemblyContaining<ProductCreateValidator>();
         builder.Services.AddSingleton<IAuthorizationHandler, SameOwnerAuthorizationHandler>();
 
@@ -121,6 +129,8 @@ internal class Program
         builder.Services.AddSwaggerGen();
 
         var app = builder.Build();
+
+        app.UseMiddleware<ErrorHandlingMiddleware>();
 
         if (!app.Environment.IsDevelopment())
         {
@@ -193,24 +203,23 @@ internal class Program
         app.Run();
     }
 
-    private static void ConfigureKestrelForTls(WebApplicationBuilder builder)
+    private static void ConfigureKestrel(WebApplicationBuilder builder, long maxRequestBodySizeBytes)
     {
-        if (builder.Environment.IsDevelopment())
-        {
-            return;
-        }
-
-        var httpsEndpoint = builder.Configuration.GetSection("Kestrel:Endpoints:Https");
-        var certificateSection = httpsEndpoint.GetSection("Certificate");
-
-        if (!httpsEndpoint.Exists() || !certificateSection.Exists())
-        {
-            throw new InvalidOperationException("HTTPS endpoint and certificate must be configured for non-development environments.");
-        }
-
         builder.WebHost.ConfigureKestrel((context, options) =>
         {
+            if (!context.HostingEnvironment.IsDevelopment())
+            {
+                var httpsEndpoint = context.Configuration.GetSection("Kestrel:Endpoints:Https");
+                var certificateSection = httpsEndpoint.GetSection("Certificate");
+
+                if (!httpsEndpoint.Exists() || !certificateSection.Exists())
+                {
+                    throw new InvalidOperationException("HTTPS endpoint and certificate must be configured for non-development environments.");
+                }
+            }
+
             options.Configure(context.Configuration.GetSection("Kestrel"));
+            options.Limits.MaxRequestBodySize = maxRequestBodySizeBytes;
         });
     }
 

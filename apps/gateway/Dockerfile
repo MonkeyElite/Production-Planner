@@ -2,7 +2,15 @@
 
 # This stage is used when running from VS in fast mode (Default for Debug configuration)
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
-USER $APP_UID
+
+ARG APP_USER=appuser
+ARG APP_UID=10001
+
+RUN groupadd --gid $APP_UID $APP_USER \
+    && useradd --uid $APP_UID --gid $APP_UID --create-home --shell /usr/sbin/nologin $APP_USER \
+    && mkdir -p /app /tmp/app \
+    && chown -R $APP_USER:$APP_USER /app /tmp/app
+
 WORKDIR /app
 EXPOSE 8080
 
@@ -25,4 +33,6 @@ RUN dotnet publish "./Gateway.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
+ARG APP_UID=10001
+USER $APP_UID
 ENTRYPOINT ["dotnet", "Gateway.dll"]
