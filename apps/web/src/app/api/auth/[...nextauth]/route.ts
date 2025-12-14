@@ -7,6 +7,22 @@ const scope =
     process.env.KEYCLOAK_SCOPE ??
     "openid profile email offline_access products.read products.write";
 
+const isHttpsEnv =
+    process.env.NEXTAUTH_URL?.startsWith("https://") ||
+    process.env.NODE_ENV === "production";
+
+const secureCookieBase = {
+    httpOnly: true,
+    sameSite: "lax" as const,
+    secure: Boolean(isHttpsEnv),
+    path: "/",
+};
+
+const csrfCookieOptions = {
+    ...secureCookieBase,
+    httpOnly: false,
+};
+
 /**
  * Runtime env helper: fail loudly if a required env var is missing.
  * This is only called inside request/refresh flows, not at module load.
@@ -64,6 +80,21 @@ const config: NextAuthOptions = {
     // This can be undefined at build time; we enforce presence via envOrThrow
     // when the auth flow actually runs.
     secret: process.env.NEXTAUTH_SECRET,
+    useSecureCookies: Boolean(isHttpsEnv),
+    cookies: {
+        sessionToken: {
+            name: `${isHttpsEnv ? "__Secure-" : ""}next-auth.session-token`,
+            options: secureCookieBase,
+        },
+        callbackUrl: {
+            name: `${isHttpsEnv ? "__Secure-" : ""}next-auth.callback-url`,
+            options: secureCookieBase,
+        },
+        csrfToken: {
+            name: `${isHttpsEnv ? "__Host-" : ""}next-auth.csrf-token`,
+            options: csrfCookieOptions,
+        },
+    },
     session: { strategy: "jwt" },
     providers: [
         Keycloak({

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -20,6 +21,17 @@ public class ProductsApiFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
+
+        builder.ConfigureAppConfiguration((context, configBuilder) =>
+        {
+            configBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Limits:MaxRequestBodySizeBytes"] = RequestBodyLimit.ToString(),
+                ["RateLimiting:PermitLimit"] = "50",
+                ["RateLimiting:WindowSeconds"] = "60",
+                ["RateLimiting:QueueLimit"] = "0"
+            });
+        });
 
         builder.ConfigureTestServices(services =>
         {

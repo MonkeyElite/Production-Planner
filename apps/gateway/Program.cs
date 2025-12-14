@@ -6,9 +6,13 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
+using Serilog.Context;
+using Serilog.Core.Enrichers;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Security.Claims;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -36,6 +40,28 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
           ValidateIssuerSigningKey = true,
           ClockSkew = TimeSpan.FromMinutes(builder.Configuration.GetValue<int>("Jwt:ClockSkewMinutes", 1)),
           ValidAlgorithms = builder.Configuration.GetSection("Jwt:Algorithms").Get<string[]>() ?? Array.Empty<string>()
+      };
+
+      o.Events = new JwtBearerEvents
+      {
+          OnAuthenticationFailed = ctx =>
+          {
+              var logger = ctx.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+              logger.LogWarning(ctx.Exception, "JWT authentication failed for {Path}", ctx.Request.Path);
+              return Task.CompletedTask;
+          },
+          OnForbidden = ctx =>
+          {
+              var logger = ctx.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+              logger.LogWarning("Authorization denied for {Path}. User={User}", ctx.Request.Path, ctx.Principal?.FindFirst("sub")?.Value ?? "anonymous");
+              return Task.CompletedTask;
+          },
+          OnChallenge = ctx =>
+          {
+              var logger = ctx.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+              logger.LogWarning("Authentication challenge for {Path}", ctx.Request.Path);
+              return Task.CompletedTask;
+          }
       };
   });
 
@@ -81,15 +107,77 @@ if (!app.Environment.IsDevelopment())
 
 app.Use(async (ctx, next) =>
 {
+    const string headerName = "X-Correlation-ID";
+
+    var correlationId = ctx.Request.Headers[headerName].FirstOrDefault();
+
+    if (string.IsNullOrWhiteSpace(correlationId))
+    {
+        correlationId = Guid.NewGuid().ToString("N");
+    }
+
+    ctx.Items[headerName] = correlationId;
+    ctx.Response.Headers[headerName] = correlationId;
+
+    using (LogContext.PushProperty("CorrelationId", correlationId))
+    {
+        await next();
+    }
+});
+
+app.UseSerilogRequestLogging();
+
+app.Use(async (ctx, next) =>
+{
+    const string headerName = "X-Correlation-ID";
+
+    var correlationId = ctx.Request.Headers[headerName].FirstOrDefault();
+
+    if (string.IsNullOrWhiteSpace(correlationId))
+    {
+        correlationId = Guid.NewGuid().ToString("N");
+    }
+
+    ctx.Items[headerName] = correlationId;
+    ctx.Response.Headers[headerName] = correlationId;
+
+    using (LogContext.PushProperty("CorrelationId", correlationId))
+    {
+        await next();
+    }
+});
+
+app.UseSerilogRequestLogging();
+
+app.Use(async (ctx, next) =>
+{
+    var csp = BuildContentSecurityPolicy(app.Environment.IsDevelopment());
+
+    ctx.Response.Headers["Content-Security-Policy"] = csp;
     ctx.Response.Headers.XContentTypeOptions = "nosniff";
     ctx.Response.Headers.XFrameOptions = "DENY";
     ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
+    ctx.Response.Headers["X-Permitted-Cross-Domain-Policies"] = "none";
+
+    if (!app.Environment.IsDevelopment() && IsHttpsRequest(ctx))
+    {
+        ctx.Response.Headers["Strict-Transport-Security"] =
+            "max-age=31536000; includeSubDomains; preload";
+    }
+
     await next();
 });
 
 app.UseCors();
 
 app.UseAuthentication();
+
+app.Use(async (ctx, next) =>
+{
+    using var userContext = EnrichUserContext(ctx.User);
+    await next();
+});
+
 app.UseAuthorization();
 
 app.UseWhen(ctx => RequiresStepUp(ctx), branch =>
@@ -161,6 +249,24 @@ static string ResolveAuthority(IConfiguration configuration, IWebHostEnvironment
     return authority;
 }
 
+static IDisposable EnrichUserContext(ClaimsPrincipal? user)
+{
+    var subject = user?.FindFirst("sub")?.Value
+                 ?? user?.Identity?.Name
+                 ?? "anonymous";
+
+    var scopes = string.Join(" ", user?.FindAll("scope").Select(c => c.Value) ?? Array.Empty<string>());
+    var roles = string.Join(" ",
+        (user?.FindAll("roles").Select(c => c.Value) ?? Enumerable.Empty<string>())
+            .Concat(user?.FindAll("role").Select(c => c.Value) ?? Enumerable.Empty<string>()));
+
+    return LogContext.Push(
+        new PropertyEnricher("UserSubject", subject),
+        new PropertyEnricher("UserScopes", scopes),
+        new PropertyEnricher("UserRoles", roles)
+    );
+}
+
 static bool RequiresStepUp(HttpContext context)
 {
     if (!(HttpMethods.IsPost(context.Request.Method)
@@ -196,4 +302,43 @@ static bool HasStepUpClaims(ClaimsPrincipal user)
 
     var acr = user.FindFirst("acr")?.Value;
     return acr is not null && string.Equals(acr, "urn:mfa", StringComparison.OrdinalIgnoreCase);
+}
+
+static string BuildContentSecurityPolicy(bool isDevelopment)
+{
+    var directives = new List<string>
+    {
+        "default-src 'self'",
+        "base-uri 'self'",
+        "frame-ancestors 'none'",
+        "form-action 'self'",
+        "object-src 'none'",
+        "img-src 'self' data: blob: https:",
+        "font-src 'self' data:",
+        "style-src 'self' 'unsafe-inline'",
+        "connect-src 'self' https:",
+    };
+
+    if (isDevelopment)
+    {
+        directives.Add("script-src 'self' 'unsafe-eval' 'unsafe-inline'");
+    }
+    else
+    {
+        directives.Add("script-src 'self' 'unsafe-inline'");
+        directives.Add("upgrade-insecure-requests");
+    }
+
+    return string.Join("; ", directives);
+}
+
+static bool IsHttpsRequest(HttpContext context)
+{
+    if (context.Request.IsHttps)
+    {
+        return true;
+    }
+
+    var forwardedProto = context.Request.Headers["X-Forwarded-Proto"].ToString();
+    return string.Equals(forwardedProto, "https", StringComparison.OrdinalIgnoreCase);
 }

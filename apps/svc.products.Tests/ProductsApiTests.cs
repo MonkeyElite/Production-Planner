@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using FluentAssertions;
 using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using svc.products.Dtos;
@@ -31,7 +32,34 @@ public class ProductsApiTests : IClassFixture<ProductsApiFactory>
             price = 15.5m
         });
 
-        response.StatusCode.Should().BeOneOf(HttpStatusCode.RequestEntityTooLarge, HttpStatusCode.BadRequest);
+        response.StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
+    }
+
+    [Fact]
+    public async Task Rapid_requests_are_rate_limited()
+    {
+        var client = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((context, configBuilder) =>
+            {
+                configBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["RateLimiting:PermitLimit"] = "2",
+                    ["RateLimiting:WindowSeconds"] = "60",
+                    ["RateLimiting:QueueLimit"] = "0",
+                    ["Limits:MaxRequestBodySizeBytes"] = ProductsApiFactory.RequestBodyLimit.ToString()
+                });
+            });
+        }).CreateClient();
+
+        var responses = new List<HttpResponseMessage>();
+
+        for (var i = 0; i < 5; i++)
+        {
+            responses.Add(await client.GetAsync("/api/products"));
+        }
+
+        responses.Should().Contain(r => r.StatusCode == HttpStatusCode.TooManyRequests);
     }
 
     [Fact]

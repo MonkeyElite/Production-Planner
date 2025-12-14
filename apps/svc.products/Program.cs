@@ -1,6 +1,7 @@
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
@@ -14,16 +15,37 @@ using System;
 using System.Security.Claims;
 using System.Linq;
 using Microsoft.IdentityModel.Tokens;
+using Serilog;
+using Serilog.Context;
+using Serilog.Core.Enrichers;
+using System.Threading.RateLimiting;
 
 public partial class Program
 {
     public const long MaxRequestBodySizeBytes = 1 * 1024 * 1024; // 1 MB
 
+    private const int DefaultRateLimitPermitLimit = 60;
+    private const int DefaultRateLimitWindowSeconds = 60;
+    private const int DefaultRateLimitQueueLimit = 0;
+
     private static void Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
 
+        builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration));
+
         ConfigureKestrel(builder, MaxRequestBodySizeBytes);
+        var maxRequestBodySizeBytes = builder.Configuration.GetValue<long?>("Limits:MaxRequestBodySizeBytes")
+            ?? MaxRequestBodySizeBytes;
+
+        var rateLimitPermitLimit = builder.Configuration.GetValue<int?>("RateLimiting:PermitLimit")
+            ?? DefaultRateLimitPermitLimit;
+        var rateLimitWindowSeconds = builder.Configuration.GetValue<int?>("RateLimiting:WindowSeconds")
+            ?? DefaultRateLimitWindowSeconds;
+        var rateLimitQueueLimit = builder.Configuration.GetValue<int?>("RateLimiting:QueueLimit")
+            ?? DefaultRateLimitQueueLimit;
+
+        ConfigureKestrel(builder, maxRequestBodySizeBytes);
 
         // Database
         builder.Services.AddDbContext<ProductsDb>(opt =>
@@ -77,6 +99,18 @@ public partial class Program
                         );
 
                         return Task.CompletedTask;
+                    },
+                    OnForbidden = ctx =>
+                    {
+                        var logger = ctx.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+                        logger.LogWarning("Authorization denied for {Path}. User={User}", ctx.Request.Path, ctx.Principal?.FindFirst("sub")?.Value ?? "anonymous");
+                        return Task.CompletedTask;
+                    },
+                    OnChallenge = ctx =>
+                    {
+                        var logger = ctx.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+                        logger.LogWarning("Authentication challenge for {Path}", ctx.Request.Path);
+                        return Task.CompletedTask;
                     }
                 };
 
@@ -117,9 +151,27 @@ public partial class Program
         });
 
         // Validation
+        builder.Services.AddRateLimiter(options =>
+        {
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+            {
+                var partitionKey = ResolveRateLimitPartitionKey(context);
+                return RateLimitPartition.GetTokenBucketLimiter(partitionKey, _ => new TokenBucketRateLimiterOptions
+                {
+                    AutoReplenishment = true,
+                    TokenLimit = rateLimitPermitLimit,
+                    TokensPerPeriod = rateLimitPermitLimit,
+                    ReplenishmentPeriod = TimeSpan.FromSeconds(rateLimitWindowSeconds),
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    QueueLimit = rateLimitQueueLimit
+                });
+            });
+        });
+
         builder.Services.AddControllers(options =>
         {
-            options.Filters.Add(new RequestSizeLimitAttribute(MaxRequestBodySizeBytes));
+            options.Filters.Add(new RequestSizeLimitAttribute(maxRequestBodySizeBytes));
         }).AddNewtonsoftJson();
         builder.Services.AddValidatorsFromAssemblyContaining<ProductCreateValidator>();
         builder.Services.AddSingleton<IAuthorizationHandler, SameOwnerAuthorizationHandler>();
@@ -137,7 +189,35 @@ public partial class Program
             app.UseHttpsRedirection();
         }
 
+        app.Use(async (ctx, next) =>
+        {
+            const string headerName = "X-Correlation-ID";
+
+            var correlationId = ctx.Request.Headers[headerName].FirstOrDefault();
+
+            if (string.IsNullOrWhiteSpace(correlationId))
+            {
+                correlationId = Guid.NewGuid().ToString("N");
+            }
+
+            ctx.Items[headerName] = correlationId;
+            ctx.Response.Headers[headerName] = correlationId;
+
+            using (LogContext.PushProperty("CorrelationId", correlationId))
+            {
+                await next();
+            }
+        });
+
+        app.UseSerilogRequestLogging();
+
         app.UseAuthentication();
+        app.Use(async (ctx, next) =>
+        {
+            using var userContext = EnrichUserContext(ctx.User);
+            await next();
+        });
+        app.UseRateLimiter();
         app.UseAuthorization();
 
         if (app.Environment.IsDevelopment())
@@ -240,6 +320,25 @@ public partial class Program
         return authority;
     }
 
+    private static string ResolveRateLimitPartitionKey(HttpContext context)
+    {
+        var userId = context.User?.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? context.User?.FindFirstValue("sub");
+
+        if (!string.IsNullOrWhiteSpace(userId))
+        {
+            return $"user:{userId}";
+        }
+
+        var remoteIp = context.Connection.RemoteIpAddress?.ToString();
+        if (!string.IsNullOrWhiteSpace(remoteIp))
+        {
+            return $"ip:{remoteIp}";
+        }
+
+        return "anonymous";
+    }
+
     private static bool HasScope(ClaimsPrincipal user, string requiredScope)
     {
         return user.FindAll("scope")
@@ -263,5 +362,23 @@ public partial class Program
 
         return amrValues.Any(v => accepted.Any(a => string.Equals(a, v, StringComparison.OrdinalIgnoreCase)))
             || (acr is not null && string.Equals(acr, "urn:mfa", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IDisposable EnrichUserContext(ClaimsPrincipal? user)
+    {
+        var subject = user?.FindFirst("sub")?.Value
+                     ?? user?.Identity?.Name
+                     ?? "anonymous";
+
+        var scopes = string.Join(" ", user?.FindAll("scope").Select(c => c.Value) ?? Array.Empty<string>());
+        var roles = string.Join(" ",
+            (user?.FindAll("roles").Select(c => c.Value) ?? Enumerable.Empty<string>())
+                .Concat(user?.FindAll("role").Select(c => c.Value) ?? Enumerable.Empty<string>()));
+
+        return LogContext.Push(
+            new PropertyEnricher("UserSubject", subject),
+            new PropertyEnricher("UserScopes", scopes),
+            new PropertyEnricher("UserRoles", roles)
+        );
     }
 }
