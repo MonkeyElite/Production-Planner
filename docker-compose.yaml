@@ -44,16 +44,23 @@ services:
         image: pp/products-api:dev
         container_name: pp-products-api
         environment:
-            # .NET picks up double-underscore as section separator
             ConnectionStrings__ProductsDb: "Host=postgres;Port=5432;Database=${PGDATABASE:-products};Username=${PGUSER:-products};Password=${PGPASSWORD:-products}"
-            ASPNETCORE_URLS: "http://0.0.0.0:8080"
-            ASPNETCORE_ENVIRONMENT: "Development"
-            Jwt__Authority: "http://keycloak:8082/realms/production"
-            Jwt__Audience: "gateway"
+            ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Development}"
+
+            Kestrel__Endpoints__Http__Url: "http://0.0.0.0:8080"
+            Kestrel__Endpoints__Https__Url: "${PRODUCTS_HTTPS_URL:-https://0.0.0.0:8443}"
+            Kestrel__Endpoints__Https__Certificate__Path: "${PRODUCTS_CERT_PATH:-/certs/products-api.pfx}"
+            Kestrel__Endpoints__Https__Certificate__Password: "${PRODUCTS_CERT_PASSWORD:-changeit}"
+
+            Jwt__Authority: "${KEYCLOAK_ISSUER:?Set KEYCLOAK_ISSUER for gateway/NextAuth}"
+            Jwt__Audience: "${KEYCLOAK_CLIENT_ID:?Set KEYCLOAK_CLIENT_ID for gateway/NextAuth}"
         ports:
-            - "5000:8080" # optional: direct access for debugging
+            - "5000:8080" # HTTP debug
+            - "9443:8443" # HTTPS debug
         networks:
             - app-net
+        volumes:
+            - ./certs:/certs:ro
         depends_on:
             keycloak:
                 condition: service_started
@@ -66,13 +73,19 @@ services:
         container_name: pp-gateway
         environment:
             ASPNETCORE_URLS: "http://0.0.0.0:8080"
-            ASPNETCORE_ENVIRONMENT: "Development"
-            Jwt__Authority: "http://keycloak:8082/realms/production"
-            Jwt__Audience: "gateway"
+            ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Development}"
+            Kestrel__Endpoints__Https__Url: "${GATEWAY_HTTPS_URL:-https://0.0.0.0:8443}"
+            Kestrel__Endpoints__Https__Certificate__Path: "${GATEWAY_CERT_PATH:-/certs/gateway.pfx}"
+            Kestrel__Endpoints__Https__Certificate__Password: "${GATEWAY_CERT_PASSWORD:-changeit}"
+            Jwt__Authority: "${KEYCLOAK_ISSUER:?Set KEYCLOAK_ISSUER for gateway/NextAuth}"
+            Jwt__Audience: "${KEYCLOAK_CLIENT_ID:?Set KEYCLOAK_CLIENT_ID for gateway/NextAuth}"
         ports:
             - "8080:8080"
+            - "8443:8443"
         networks:
             - app-net
+        volumes:
+            - ./certs:/certs:ro
         depends_on:
             keycloak:
                 condition: service_started
@@ -85,12 +98,12 @@ services:
         container_name: pp-web
         environment:
             NODE_ENV: "development"
-            NEXT_PUBLIC_GATEWAY_URL: "http://localhost:8080"
+            NEXT_PUBLIC_GATEWAY_URL: "https://localhost:8443"
             NEXTAUTH_URL: "http://localhost:3000"
-            NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-super-secret-example}
-            KEYCLOAK_ISSUER: "http://keycloak:8082/realms/production"
-            KEYCLOAK_CLIENT_ID: "gateway"
-            KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-gateway-secret}
+            NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?Provide a secure NEXTAUTH_SECRET value}
+            KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:?Set KEYCLOAK_ISSUER to your realm issuer URL}
+            KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:?Set KEYCLOAK_CLIENT_ID for NextAuth}
+            KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:?Provide the Keycloak client secret}
             KEYCLOAK_SCOPE: "openid products.read products.write offline_access"
         ports:
             - "3000:3000"

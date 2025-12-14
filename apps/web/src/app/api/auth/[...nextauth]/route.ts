@@ -3,24 +3,36 @@ import Keycloak from "next-auth/providers/keycloak";
 import type { NextAuthOptions } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 
-const issuer =
-    process.env.KEYCLOAK_ISSUER ?? "http://keycloak:8082/realms/production";
-console.log("Keycloak Issuer:", issuer);
 const scope =
     process.env.KEYCLOAK_SCOPE ??
     "openid profile email offline_access products.read products.write";
-console.log("Keycloak Scope:", scope);
-const tokenEndpoint = `${issuer}/protocol/openid-connect/token`;
-console.log("Keycloak Token Endpoint:", tokenEndpoint);
+
+/**
+ * Runtime env helper: fail loudly if a required env var is missing.
+ * This is only called inside request/refresh flows, not at module load.
+ */
+function envOrThrow(name: string): string {
+    const value = process.env[name];
+    if (!value) {
+        throw new Error(`Missing ${name}. Set it in environment for NextAuth.`);
+    }
+    return value;
+}
 
 async function refreshAccessToken(token: JWT): Promise<JWT> {
     if (!token.refreshToken) {
         return { ...token, error: "MissingRefreshToken" };
     }
 
+    const issuer = envOrThrow("KEYCLOAK_ISSUER");
+    const clientId = envOrThrow("KEYCLOAK_CLIENT_ID");
+    const clientSecret = envOrThrow("KEYCLOAK_CLIENT_SECRET");
+
+    const tokenEndpoint = `${issuer}/protocol/openid-connect/token`;
+
     const body = new URLSearchParams({
-        client_id: process.env.KEYCLOAK_CLIENT_ID ?? "gateway",
-        client_secret: process.env.KEYCLOAK_CLIENT_SECRET ?? "gateway-secret",
+        client_id: clientId,
+        client_secret: clientSecret,
         grant_type: "refresh_token",
         refresh_token: token.refreshToken as string,
     });
@@ -49,14 +61,17 @@ async function refreshAccessToken(token: JWT): Promise<JWT> {
 }
 
 const config: NextAuthOptions = {
+    // This can be undefined at build time; we enforce presence via envOrThrow
+    // when the auth flow actually runs.
     secret: process.env.NEXTAUTH_SECRET,
     session: { strategy: "jwt" },
     providers: [
         Keycloak({
-            clientId: process.env.KEYCLOAK_CLIENT_ID ?? "gateway",
-            clientSecret:
-                process.env.KEYCLOAK_CLIENT_SECRET ?? "gateway-secret",
-            issuer, // this is enough
+            // Use empty string fallback to avoid TS complaining; real validation
+            // happens via envOrThrow at runtime.
+            clientId: process.env.KEYCLOAK_CLIENT_ID ?? "",
+            clientSecret: process.env.KEYCLOAK_CLIENT_SECRET ?? "",
+            issuer: process.env.KEYCLOAK_ISSUER,
             authorization: {
                 params: { scope },
             },
@@ -64,6 +79,12 @@ const config: NextAuthOptions = {
     ],
     callbacks: {
         async jwt({ token, account }) {
+            // Ensure critical env is present when JWT flow is actually used.
+            envOrThrow("NEXTAUTH_SECRET");
+            envOrThrow("KEYCLOAK_ISSUER");
+            envOrThrow("KEYCLOAK_CLIENT_ID");
+            envOrThrow("KEYCLOAK_CLIENT_SECRET");
+
             if (account) {
                 return {
                     ...token,

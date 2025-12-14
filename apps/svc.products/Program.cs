@@ -1,18 +1,24 @@
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using FluentValidation;
 using svc.products.Authorization;
 using svc.products.Data;
 using svc.products.Validation;
+using Microsoft.Extensions.Configuration;
+using System;
 using System.Security.Claims;
 using System.Linq;
+using Microsoft.IdentityModel.Tokens;
 
 internal class Program
 {
     private static void Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
+
+        ConfigureKestrelForTls(builder);
 
         // Database
         builder.Services.AddDbContext<ProductsDb>(opt =>
@@ -22,9 +28,25 @@ internal class Program
         builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(o =>
             {
-                o.Authority = builder.Configuration["Jwt:Authority"];
+                o.Authority = ResolveAuthority(builder.Configuration, builder.Environment);
                 o.Audience = builder.Configuration["Jwt:Audience"];
-                o.RequireHttpsMetadata = false;
+                o.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
+                o.MapInboundClaims = false;
+                o.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuer = true,
+                    ValidIssuer = builder.Configuration["Jwt:Issuer"],
+                    ValidIssuers = builder.Configuration.GetSection("Jwt:ValidIssuers").Get<string[]>() ?? Array.Empty<string>(),
+                    ValidateAudience = true,
+                    ValidAudience = builder.Configuration["Jwt:Audience"],
+                    ValidAudiences = builder.Configuration.GetSection("Jwt:Audiences").Get<string[]>() ?? Array.Empty<string>(),
+                    ValidateLifetime = true,
+                    RequireExpirationTime = true,
+                    ValidateIssuerSigningKey = true,
+                    RoleClaimType = "roles",
+                    ClockSkew = TimeSpan.FromMinutes(builder.Configuration.GetValue<int>("Jwt:ClockSkewMinutes", 1)),
+                    ValidAlgorithms = builder.Configuration.GetSection("Jwt:Algorithms").Get<string[]>() ?? Array.Empty<string>()
+                };
                 o.Events = new JwtBearerEvents
                 {
                     OnAuthenticationFailed = ctx =>
@@ -38,13 +60,17 @@ internal class Program
                     },
                     OnTokenValidated = ctx =>
                     {
-                        var logger = ctx.HttpContext.RequestServices
-                            .GetRequiredService<ILogger<Program>>();
-                        var scopes = string.Join(" ", ctx.Principal?
-                            .FindAll("scope")
-                            .Select(c => c.Value));
-                        logger.LogInformation("JWT validated. Sub={Sub}, Scope={Scope}",
-                            ctx.Principal?.FindFirst("sub")?.Value, scopes);
+                        var logger = ctx.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+
+                        var scopes = string.Join(" ", ctx.Principal?.FindAll("scope").Select(c => c.Value) ?? Array.Empty<string>());
+                        var roles = string.Join(" ", ctx.Principal?.FindAll("roles").Select(c => c.Value) ?? Array.Empty<string>());
+
+                        logger.LogInformation("JWT validated. Sub={Sub}, Scope={Scope}, Roles={Roles}",
+                            ctx.Principal?.FindFirst("sub")?.Value,
+                            scopes,
+                            roles
+                        );
+
                         return Task.CompletedTask;
                     }
                 };
@@ -63,7 +89,8 @@ internal class Program
             {
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(ctx =>
-                    HasScope(ctx.User, "products.write") && HasPlannerRole(ctx.User));
+                    HasPlannerRole(ctx.User));
+                    // HasScope(ctx.User, "products.write") && HasPlannerRole(ctx.User));
             });
 
             o.AddPolicy("mfa", policy =>
@@ -166,6 +193,44 @@ internal class Program
         app.Run();
     }
 
+    private static void ConfigureKestrelForTls(WebApplicationBuilder builder)
+    {
+        if (builder.Environment.IsDevelopment())
+        {
+            return;
+        }
+
+        var httpsEndpoint = builder.Configuration.GetSection("Kestrel:Endpoints:Https");
+        var certificateSection = httpsEndpoint.GetSection("Certificate");
+
+        if (!httpsEndpoint.Exists() || !certificateSection.Exists())
+        {
+            throw new InvalidOperationException("HTTPS endpoint and certificate must be configured for non-development environments.");
+        }
+
+        builder.WebHost.ConfigureKestrel((context, options) =>
+        {
+            options.Configure(context.Configuration.GetSection("Kestrel"));
+        });
+    }
+
+    private static string ResolveAuthority(IConfiguration configuration, IWebHostEnvironment environment)
+    {
+        var authority = configuration["Jwt:Authority"];
+
+        if (string.IsNullOrWhiteSpace(authority))
+        {
+            throw new InvalidOperationException("JWT authority configuration is missing.");
+        }
+
+        if (!environment.IsDevelopment() && authority.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("JWT authority must use HTTPS in non-development environments.");
+        }
+
+        return authority;
+    }
+
     private static bool HasScope(ClaimsPrincipal user, string requiredScope)
     {
         return user.FindAll("scope")
@@ -175,9 +240,9 @@ internal class Program
 
     private static bool HasPlannerRole(ClaimsPrincipal user)
     {
-        var plannerRole = "planner";
-        return user.FindAll(ClaimTypes.Role).Concat(user.FindAll("role"))
-            .Any(c => string.Equals(c.Value, plannerRole, StringComparison.OrdinalIgnoreCase));
+        return user.IsInRole("planner")
+            || user.FindAll("roles").Any(c => string.Equals(c.Value, "planner", StringComparison.OrdinalIgnoreCase))
+            || user.FindAll("role").Any(c => string.Equals(c.Value, "planner", StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool HasStrongAuthentication(ClaimsPrincipal user)

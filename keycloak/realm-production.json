@@ -86,6 +86,22 @@
                         "jsonType.label": "String"
                     }
                 },
+
+                {
+                    "name": "realm-roles",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-usermodel-realm-role-mapper",
+                    "consentRequired": false,
+                    "config": {
+                        "multivalued": "true",
+                        "userinfo.token.claim": "false",
+                        "id.token.claim": "true",
+                        "access.token.claim": "true",
+                        "claim.name": "roles",
+                        "jsonType.label": "String"
+                    }
+                },
+
                 {
                     "name": "aud-gateway",
                     "protocol": "openid-connect",

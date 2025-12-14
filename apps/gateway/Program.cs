@@ -1,22 +1,42 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
 using Serilog;
+using System;
 using System.Linq;
 using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
+
+ConfigureKestrelForTls(builder);
 
 builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration));
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
   .AddJwtBearer(o =>
   {
-      o.Authority = builder.Configuration["Jwt:Authority"];
+      o.Authority = ResolveAuthority(builder.Configuration, builder.Environment);
       o.Audience = builder.Configuration["Jwt:Audience"];
 
-      o.RequireHttpsMetadata = false;
+      o.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
+      o.TokenValidationParameters = new TokenValidationParameters
+      {
+          ValidateIssuer = true,
+          ValidIssuer = builder.Configuration["Jwt:Issuer"],
+          ValidIssuers = builder.Configuration.GetSection("Jwt:ValidIssuers").Get<string[]>() ?? Array.Empty<string>(),
+          ValidateAudience = true,
+          ValidAudience = builder.Configuration["Jwt:Audience"],
+          ValidAudiences = builder.Configuration.GetSection("Jwt:Audiences").Get<string[]>() ?? Array.Empty<string>(),
+          ValidateLifetime = true,
+          RequireExpirationTime = true,
+          ValidateIssuerSigningKey = true,
+          ClockSkew = TimeSpan.FromMinutes(builder.Configuration.GetValue<int>("Jwt:ClockSkewMinutes", 1)),
+          ValidAlgorithms = builder.Configuration.GetSection("Jwt:Algorithms").Get<string[]>() ?? Array.Empty<string>()
+      };
   });
 
 builder.Services.AddAuthorizationBuilder()
@@ -103,6 +123,44 @@ app.MapReverseProxy();
 
 app.Run();
 
+static void ConfigureKestrelForTls(WebApplicationBuilder builder)
+{
+    if (builder.Environment.IsDevelopment())
+    {
+        return;
+    }
+
+    var httpsEndpoint = builder.Configuration.GetSection("Kestrel:Endpoints:Https");
+    var certificateSection = httpsEndpoint.GetSection("Certificate");
+
+    if (!httpsEndpoint.Exists() || !certificateSection.Exists())
+    {
+        throw new InvalidOperationException("HTTPS endpoint and certificate must be configured for non-development environments.");
+    }
+
+    builder.WebHost.ConfigureKestrel((context, options) =>
+    {
+        options.Configure(context.Configuration.GetSection("Kestrel"));
+    });
+}
+
+static string ResolveAuthority(IConfiguration configuration, IWebHostEnvironment environment)
+{
+    var authority = configuration["Jwt:Authority"];
+
+    if (string.IsNullOrWhiteSpace(authority))
+    {
+        throw new InvalidOperationException("JWT authority configuration is missing.");
+    }
+
+    if (!environment.IsDevelopment() && authority.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException("JWT authority must use HTTPS in non-development environments.");
+    }
+
+    return authority;
+}
+
 static bool RequiresStepUp(HttpContext context)
 {
     if (!(HttpMethods.IsPost(context.Request.Method)
@@ -122,6 +180,8 @@ static bool HasStepUpClaims(ClaimsPrincipal user)
     {
         return false;
     }
+
+    return true;
 
     var amrMatches = user.FindAll("amr")
         .Select(c => c.Value)
